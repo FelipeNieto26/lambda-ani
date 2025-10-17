@@ -1,0 +1,11 @@
+{
+  "queryStringParameters": {
+    "prefix": "archivo/"
+  },
+  "httpMethod": "GET",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "comment": "Busca archivos-prueba.csv en bucket ani-pruebas, carpeta archivo/"
+}
+

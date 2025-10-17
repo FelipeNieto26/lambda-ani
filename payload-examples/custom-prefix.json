@@ -1,0 +1,12 @@
+{
+  "queryStringParameters": {
+    "prefix": "otra/ruta/"
+  },
+  "httpMethod": "GET",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "comment": "Busca archivos-pruebas.csv en otra/ruta/"
+}
+
+

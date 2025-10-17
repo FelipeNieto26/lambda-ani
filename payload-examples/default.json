@@ -1,0 +1,10 @@
+{
+  "queryStringParameters": {},
+  "httpMethod": "GET",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "comment": "Sin parámetros usa el prefix por defecto: prueba/de/rutas/del/ y busca archivos-pruebas.csv"
+}
+
+

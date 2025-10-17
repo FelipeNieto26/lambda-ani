@@ -1,0 +1,29 @@
+{
+  "httpMethod": "GET",
+  "path": "/",
+  "headers": {
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+  },
+  "queryStringParameters": null,
+  "pathParameters": null,
+  "stageVariables": null,
+  "requestContext": {
+    "resourceId": "resource-id",
+    "apiId": "api-id",
+    "resourcePath": "/",
+    "httpMethod": "GET",
+    "requestId": "request-id-default",
+    "accountId": "123456789012",
+    "stage": "prod",
+    "identity": {
+      "sourceIp": "127.0.0.1",
+      "userAgent": "Lambda-Test-Client"
+    },
+    "path": "/prod/"
+  },
+  "isBase64Encoded": false,
+  "body": null,
+  "_comment": "Usa el prefix por defecto: archivo/"
+}
+
