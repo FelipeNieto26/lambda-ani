@@ -12,12 +12,7 @@ import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.GetObjectRequest;
-import software.amazon.awssdk.services.s3.model.GetObjectResponse;
-import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
-import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
-import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.model.*;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -39,6 +34,19 @@ public class S3Service {
 
     @ConfigProperty(name = "aws.region")
     String region;
+
+    public S3Service() {
+    }
+
+    public S3Service(String bucketName, String region) {
+        this.bucketName = bucketName;
+        this.region = region;
+        this.s3Client = S3Client.builder()
+                .region(Region.of(region))
+                .credentialsProvider(DefaultCredentialsProvider.create())
+                .build();
+        logger.info("S3Service inicializado manualmente - Bucket: {}, Region: {}", bucketName, region);
+    }
 
     /**
      * Inicializa el S3Client si no fue inyectado (por ejemplo al correr localmente).

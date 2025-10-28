@@ -1,0 +1,10 @@
+{
+  "queryStringParameters": {
+    "uuid": "test-uuid-xlsx"
+  },
+  "httpMethod": "GET",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "comment": "Test para archivos Excel. El archivo debe ser: test-uuid-xlsx/archivos-prueba.xlsx"
+}
