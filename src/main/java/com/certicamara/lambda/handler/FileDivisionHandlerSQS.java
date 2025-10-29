@@ -4,6 +4,7 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent.SQSMessage;
+import com.certicamara.lambda.domain.persistance.ILogsRepositoryPort;
 import com.certicamara.lambda.model.DivisionResult;
 import com.certicamara.lambda.service.FileDivisionService;
 import com.certicamara.lambda.service.S3Service;
@@ -40,6 +41,7 @@ public class FileDivisionHandlerSQS implements RequestHandler<SQSEvent, Void> {
     private FileDivisionService fileDivisionService;
     private ObjectMapper objectMapper;
     private String bucketNameValue;
+    private ILogsRepositoryPort logsRepository;
 
     @ConfigProperty(name = "aws.s3.file.name")
     Optional<String> fileName;
@@ -85,15 +87,31 @@ public class FileDivisionHandlerSQS implements RequestHandler<SQSEvent, Void> {
             System.out.println("[INFO] Output Prefix: " + outputPrefixValue);
 
             S3Service s3Service = new S3Service(bucketNameValue, regionValue);
+            
+            String queueUrl = outputQueueUrl != null && outputQueueUrl.isPresent()
+                ? outputQueueUrl.get()
+                : "https://sqs.us-east-2.amazonaws.com/343218178755/file-processing-queue";
+            SQSService sqsService = new SQSService(queueUrl, regionValue);
 
             this.fileDivisionService = new FileDivisionService(
                     s3Service,
+                    sqsService,
                     expectedRecordsValue,
                     recordsPerChunkValue,
                     outputPrefixValue,
                     bucketNameValue,
                     regionValue
             );
+            
+            System.out.println("[INFO] Inicializando LogsRepository manualmente...");
+            try {
+                // Importar la implementación directamente
+                this.logsRepository = new com.certicamara.lambda.infrastructure.persistance.LogsRepositoryAdapter(regionValue);
+                System.out.println("[INFO] ✅ LogsRepository inicializado correctamente");
+            } catch (Exception e) {
+                System.out.println("[ERROR] ❌ Error inicializando LogsRepository: " + e.getMessage());
+                e.printStackTrace();
+            }
 
             System.out.println("[INFO] === Servicios inicializados correctamente ===");
         }
@@ -134,7 +152,7 @@ public class FileDivisionHandlerSQS implements RequestHandler<SQSEvent, Void> {
         System.out.println("[INFO] Fallidos: " + failureCount);
         System.out.println("[INFO] ========================================");
 
-        return null; // Void
+        return null;
     }
 
     /**
@@ -164,6 +182,50 @@ public class FileDivisionHandlerSQS implements RequestHandler<SQSEvent, Void> {
 
         System.out.println("[INFO] UUID extraído: " + uuid);
 
+        // ===== ACTUALIZAR ESTADO A "EN PROGRESO" EN DYNAMODB =====
+        System.out.println("[INFO] ==========================================");
+        System.out.println("[INFO] 📝 ACTUALIZANDO ESTADO A EN PROGRESO");
+        System.out.println("[INFO] ==========================================");
+        System.out.println("[INFO] UUID a actualizar: " + uuid);
+        
+        if (logsRepository == null) {
+            System.out.println("[ERROR] ❌❌❌ logsRepository es NULL - No se inyectó correctamente");
+            System.out.println("[ERROR] Saltando actualización de DynamoDB");
+        } else {
+            System.out.println("[INFO] ✅ logsRepository está inyectado correctamente");
+            System.out.println("[INFO] Clase: " + logsRepository.getClass().getName());
+            
+            try {
+                System.out.println("[INFO] >>> Llamando a updateStatusLog('" + uuid + "', 'EN PROGRESO')...");
+                
+                long updateStart = System.currentTimeMillis();
+                logsRepository.updateStatusLog(uuid, "EN PROGRESO")
+                    .await().indefinitely();
+                long updateTime = System.currentTimeMillis() - updateStart;
+                
+                System.out.println("[INFO] ✅✅✅ Estado actualizado a EN PROGRESO EXITOSAMENTE");
+                System.out.println("[INFO] Tiempo de actualización: " + updateTime + " ms");
+                
+            } catch (Exception dbError) {
+                System.out.println("[ERROR] ==========================================");
+                System.out.println("[ERROR] ❌❌❌ ERROR al actualizar estado en DynamoDB");
+                System.out.println("[ERROR] ==========================================");
+                System.out.println("[ERROR] UUID intentado: " + uuid);
+                System.out.println("[ERROR] Tipo error: " + dbError.getClass().getName());
+                System.out.println("[ERROR] Mensaje error: " + dbError.getMessage());
+                System.out.println("[ERROR] ==========================================");
+                dbError.printStackTrace();
+                
+                Throwable cause = dbError.getCause();
+                while (cause != null) {
+                    System.out.println("[ERROR] Causa: " + cause.getClass().getName() + " - " + cause.getMessage());
+                    cause = cause.getCause();
+                }
+            }
+        }
+        
+        System.out.println("[INFO] ==========================================");
+
         System.out.println("[INFO] 🔍 Buscando archivo en S3...");
         String fileKey = findFileInDirectory(uuid);
         System.out.println("[INFO] ✅ Archivo encontrado: " + fileKey);
@@ -180,9 +242,11 @@ public class FileDivisionHandlerSQS implements RequestHandler<SQSEvent, Void> {
         long processingStartTime = System.currentTimeMillis();
         
         System.out.println("[INFO] 🚀 Iniciando procesamiento del archivo...");
+        logsRepository.addLog(uuid, "INFO", "Inicio division del archivo: " + fileKey);
         DivisionResult result = fileDivisionService.processDivisionWithCustomOutput(
             fileKey, 
-            outputFolder
+            outputFolder,
+            uuid
         );
         
         long processingTime = System.currentTimeMillis() - processingStartTime;
@@ -193,7 +257,8 @@ public class FileDivisionHandlerSQS implements RequestHandler<SQSEvent, Void> {
             String errorMessage = (result != null && result.getMessage() != null)
                 ? result.getMessage()
                 : "Error desconocido durante la división del archivo.";
-            
+            logsRepository.addLog(uuid, "INFO", "Fallo division del archivo: " + fileKey);
+
             System.out.println("[ERROR] ❌ === LA DIVISIÓN FALLÓ ===");
             System.out.println("[ERROR] ❌ Error: " + errorMessage);
             System.out.println("[ERROR] ❌ No se enviará mensaje a SQS de salida");
@@ -205,9 +270,9 @@ public class FileDivisionHandlerSQS implements RequestHandler<SQSEvent, Void> {
         System.out.println("[INFO] ✅ Archivos generados: " + result.getTotalChunks());
         System.out.println("[INFO] ✅ Total registros: " + result.getTotalRecords());
         System.out.println("[INFO] ✅ Carpeta: " + result.getOutputFolder());
-        
-        sendSuccessMessageToSQS(uuid, filename, result);
-        
+        System.out.println("[INFO] ✅ Mensajes SQS enviados automáticamente por cada chunk generado");
+        logsRepository.addLog(uuid, "INFO", "Fin division del archivo: " + fileKey);
+
         System.out.println("[INFO] ========================================");
         System.out.println("[INFO] === MENSAJE PROCESADO COMPLETAMENTE ===");
         System.out.println("[INFO] === Tiempo total: " + processingTime + " ms ===");

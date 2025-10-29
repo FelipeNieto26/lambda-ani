@@ -4,6 +4,7 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
+import com.certicamara.lambda.domain.persistance.ILogsRepositoryPort;
 import com.certicamara.lambda.model.DivisionResult;
 import com.certicamara.lambda.service.FileDivisionService;
 import com.certicamara.lambda.service.S3Service;
@@ -25,6 +26,7 @@ public class FileDivisionHandler implements RequestHandler<APIGatewayProxyReques
     private FileDivisionService fileDivisionService;
     private ObjectMapper objectMapper;
     private String bucketNameValue;
+    private ILogsRepositoryPort fileStatusRepository;
 
     @ConfigProperty(name = "aws.s3.file.name")
     Optional<String> fileName;
@@ -67,15 +69,30 @@ public class FileDivisionHandler implements RequestHandler<APIGatewayProxyReques
             System.out.println("[INFO] Output Prefix: " + outputPrefixValue + " (isPresent: " + (outputPrefix != null && outputPrefix.isPresent()) + ")");
 
             S3Service s3Service = new S3Service(bucketNameValue, regionValue);
+            
+            // Inicializar SQS service para envío de mensajes por chunk
+            String queueUrl = "https://sqs.us-east-2.amazonaws.com/343218178755/file-processing-queue";
+            SQSService sqsService = new SQSService(queueUrl, regionValue);
 
             this.fileDivisionService = new FileDivisionService(
                     s3Service,
+                    sqsService,
                     expectedRecordsValue,
                     recordsPerChunkValue,
                     outputPrefixValue,
                     bucketNameValue,
                     regionValue
             );
+            
+            // Inicializar repositorio de logs manualmente (CDI no funciona en Lambda)
+            System.out.println("[INFO] Inicializando LogsRepository manualmente...");
+            try {
+                this.fileStatusRepository = new com.certicamara.lambda.infrastructure.persistance.LogsRepositoryAdapter(regionValue);
+                System.out.println("[INFO] ✅ LogsRepository inicializado correctamente");
+            } catch (Exception e) {
+                System.out.println("[ERROR] ❌ Error inicializando LogsRepository: " + e.getMessage());
+                e.printStackTrace();
+            }
 
             System.out.println("[INFO] === Servicios inicializados correctamente ===");
         }
@@ -118,10 +135,58 @@ public class FileDivisionHandler implements RequestHandler<APIGatewayProxyReques
 
             String outputFolder = uuid + "/output/";
             System.out.println("[INFO] 📁 Carpeta de salida configurada: " + outputFolder);
+            
+            // ===== ACTUALIZAR ESTADO A "EN PROGRESO" EN DYNAMODB =====
+            System.out.println("[INFO] ==========================================");
+            System.out.println("[INFO] 📝 ACTUALIZANDO ESTADO A EN PROGRESO");
+            System.out.println("[INFO] ==========================================");
+            System.out.println("[INFO] UUID a actualizar: " + uuid);
+            System.out.println("[INFO] Longitud UUID: " + uuid.length());
+            System.out.println("[INFO] UUID trim: '" + uuid.trim() + "'");
+            
+            if (fileStatusRepository == null) {
+                System.out.println("[ERROR] ❌❌❌ fileStatusRepository es NULL - No se inyectó correctamente");
+                System.out.println("[ERROR] ❌ CDI no funcionó - verificar @ApplicationScoped en LogsRepositoryAdapter");
+                System.out.println("[ERROR] Saltando actualización de DynamoDB");
+            } else {
+                System.out.println("[INFO] ✅ fileStatusRepository está inyectado correctamente");
+                System.out.println("[INFO] Clase: " + fileStatusRepository.getClass().getName());
+                
+                try {
+                    System.out.println("[INFO] >>> Llamando a updateStatusLog('" + uuid + "', 'EN PROGRESO')...");
+                    
+                    long updateStart = System.currentTimeMillis();
+                    fileStatusRepository.updateStatusLog(uuid, "EN PROGRESO")
+                        .await().indefinitely();
+                    long updateTime = System.currentTimeMillis() - updateStart;
+                    
+                    System.out.println("[INFO] ✅✅✅ Estado actualizado a EN PROGRESO EXITOSAMENTE");
+                    System.out.println("[INFO] Tiempo de actualización: " + updateTime + " ms");
+                    
+                } catch (Exception dbError) {
+                    System.out.println("[ERROR] ==========================================");
+                    System.out.println("[ERROR] ❌❌❌ ERROR al actualizar estado en DynamoDB");
+                    System.out.println("[ERROR] ==========================================");
+                    System.out.println("[ERROR] UUID intentado: " + uuid);
+                    System.out.println("[ERROR] Tipo error: " + dbError.getClass().getName());
+                    System.out.println("[ERROR] Mensaje error: " + dbError.getMessage());
+                    System.out.println("[ERROR] ==========================================");
+                    dbError.printStackTrace();
+                    
+                    // Imprimir causa raíz si existe
+                    Throwable cause = dbError.getCause();
+                    while (cause != null) {
+                        System.out.println("[ERROR] Causa: " + cause.getClass().getName() + " - " + cause.getMessage());
+                        cause = cause.getCause();
+                    }
+                }
+            }
+            
+            System.out.println("[INFO] ==========================================");
             System.out.println("[INFO] 🚀 Iniciando procesamiento del archivo...");
 
             long processingStart = System.currentTimeMillis();
-            DivisionResult result = fileDivisionService.processDivisionWithCustomOutput(fileKey, outputFolder);
+            DivisionResult result = fileDivisionService.processDivisionWithCustomOutput(fileKey, outputFolder, uuid);
             long processingTime = System.currentTimeMillis() - processingStart;
 
             System.out.println("[INFO] ⏱️ Tiempo de procesamiento total: " + processingTime + " ms (" + (processingTime / 1000) + " segundos)");
@@ -141,34 +206,12 @@ public class FileDivisionHandler implements RequestHandler<APIGatewayProxyReques
             System.out.println("[INFO] === DIVISIÓN COMPLETADA ===");
             System.out.println("[INFO] Archivos generados: " + result.getTotalChunks());
             System.out.println("[INFO] Total registros: " + result.getTotalRecords());
+            System.out.println("[INFO] ✅ Mensajes SQS enviados automáticamente por cada chunk generado");
             
-            // Enviar mensaje a SQS
-            try {
-                System.out.println("[INFO] === ENVIANDO MENSAJE A SQS ===");
-                
-                // Extraer filename del fileKey
-                String filename = fileKey.substring(fileKey.lastIndexOf("/") + 1);
-                
-                // Inicializar SQS service
-                String queueUrl = "https://sqs.us-east-2.amazonaws.com/343218178755/file-processing-queue";
-                String regionValue = region != null ? region.orElse("us-east-2") : "us-east-2";
-                SQSService sqsService = new SQSService(queueUrl, regionValue);
-                
-                // Enviar mensaje a la cola SQS
-                sqsService.sendMessage(filename, uuid);
-                System.out.println("[INFO] ✅ Mensaje enviado a SQS: UUID=" + uuid + ", Filename=" + filename);
-                
-                // Responder con 202 Accepted indicando que el procesamiento está completo
-                response.setStatusCode(202);
-                response.setBody(String.format("{\"message\":\"File processed and sent to queue\",\"uuid\":\"%s\",\"filename\":\"%s\"}", uuid, filename));
-                
-            } catch (Exception sqsError) {
-                System.out.println("[ERROR] Error al enviar mensaje a SQS: " + sqsError.getMessage());
-                // Continuar con la respuesta aunque SQS falle
-                response.setStatusCode(202);
-                response.setBody(String.format("{\"message\":\"File processed (SQS error: %s)\",\"uuid\":\"%s\"}", 
-                    sqsError.getMessage(), uuid));
-            }
+            // Responder con 202 Accepted indicando que el procesamiento está completo
+            response.setStatusCode(202);
+            response.setBody(String.format("{\"message\":\"File processed successfully\",\"uuid\":\"%s\",\"chunks\":%d,\"records\":%d}", 
+                uuid, result.getTotalChunks(), result.getTotalRecords()));
             
             response.setIsBase64Encoded(false);
             System.out.println("[INFO] === RETORNANDO RESPUESTA 202 ACCEPTED ===");

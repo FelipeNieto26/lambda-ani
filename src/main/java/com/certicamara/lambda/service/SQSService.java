@@ -80,5 +80,44 @@ public class SQSService {
             throw new RuntimeException("Error al enviar mensaje a SQS: " + e.getMessage(), e);
         }
     }
+
+    /**
+     * Envía un mensaje de chunk a la cola SQS (nuevo formato)
+     * @param bucket Nombre del bucket S3
+     * @param key Ruta completa del chunk en S3 (ej: "uuid/output/chunk_0001.csv")
+     * @param sizeBatch Tamaño del batch (siempre 100)
+     * @param idLog UUID del log en DynamoDB
+     */
+    public void sendChunkMessage(String bucket, String key, int sizeBatch, String idLog) {
+        try {
+            initializeSqsClient();
+            
+            Map<String, Object> messageBody = new HashMap<>();
+            messageBody.put("bucket", bucket);
+            messageBody.put("key", key);
+            messageBody.put("sizeBatch", sizeBatch);
+            messageBody.put("idLog", idLog);
+            
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectWriter writer = mapper.writerWithDefaultPrettyPrinter();
+            String messageJson = writer.writeValueAsString(messageBody);
+            
+            logger.info("JSON de chunk que se enviará a SQS:\n{}", messageJson);
+            
+            SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
+                    .queueUrl(queueUrl)
+                    .messageBody(messageJson)
+                    .build();
+            
+            SendMessageResponse response = sqsClient.sendMessage(sendMessageRequest);
+            
+            logger.info("Mensaje de chunk enviado a SQS exitosamente - MessageId: {}, Bucket: {}, Key: {}, IdLog: {}", 
+                response.messageId(), bucket, key, idLog);
+            
+        } catch (Exception e) {
+            logger.error("Error al enviar mensaje de chunk a SQS: {}", e.getMessage(), e);
+            throw new RuntimeException("Error al enviar mensaje de chunk a SQS: " + e.getMessage(), e);
+        }
+    }
 }
 

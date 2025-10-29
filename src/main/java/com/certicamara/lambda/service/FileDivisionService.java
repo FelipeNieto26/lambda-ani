@@ -35,11 +35,13 @@ public class FileDivisionService {
     private static final PrintStream out = System.out;
 
     private S3Service s3Service;
+    private SQSService sqsService;
     private int expectedRecords;
     private int recordsPerChunk;
     private String outputPrefix;
     private String bucketName;
     private String region;
+    private String currentIdLog; // Para pasar idLog a las clases internas
 
     public FileDivisionService() {
     }
@@ -58,6 +60,26 @@ public class FileDivisionService {
         this.region = region;
 
         logger.info("FileDivisionService inicializado - expectedRecords: {}, recordsPerChunk: {}",
+            expectedRecords, recordsPerChunk);
+    }
+
+    public FileDivisionService(
+            S3Service s3Service,
+            SQSService sqsService,
+            int expectedRecords,
+            int recordsPerChunk,
+            String outputPrefix,
+            String bucketName,
+            String region) {
+        this.s3Service = s3Service;
+        this.sqsService = sqsService;
+        this.expectedRecords = expectedRecords;
+        this.recordsPerChunk = recordsPerChunk;
+        this.outputPrefix = outputPrefix;
+        this.bucketName = bucketName;
+        this.region = region;
+
+        logger.info("FileDivisionService inicializado con SQS - expectedRecords: {}, recordsPerChunk: {}",
             expectedRecords, recordsPerChunk);
     }
 
@@ -105,7 +127,7 @@ public class FileDivisionService {
             logger.info("Carpeta de salida: {}", outputFolder);
 
             // Procesar el archivo directamente desde el stream
-            long totalRecords = processFileStreamOptimized(fileKey, outputFolder, result);
+            long totalRecords = processFileStreamOptimized(fileKey, outputFolder, result, currentIdLog);
             result.setTotalRecords(totalRecords);
 
             logger.info("Total de registros procesados: {} (NO se valida cantidad exacta, se aceptan todos)", totalRecords);
@@ -140,10 +162,11 @@ public class FileDivisionService {
      * @param outputFolder Carpeta de salida personalizada (ej: "uuid123/output/")
      * @return Resultado de la división
      */
-    public DivisionResult processDivisionWithCustomOutput(String fileKey, String outputFolder) {
+    public DivisionResult processDivisionWithCustomOutput(String fileKey, String outputFolder, String idLog) {
         out.println("[INFO] ===== processDivisionWithCustomOutput INICIADO =====");
         out.println("[INFO] fileKey: " + fileKey);
         out.println("[INFO] outputFolder: " + outputFolder);
+        out.println("[INFO] idLog: " + idLog);
 
         long startTime = System.currentTimeMillis();
         DivisionResult result = new DivisionResult();
@@ -159,6 +182,9 @@ public class FileDivisionService {
         out.println("[INFO] recordsPerChunk: " + recordsPerChunk);
         out.println("[INFO] expectedRecords: " + expectedRecords);
 
+        // Establecer el idLog actual para uso en las clases internas
+        this.currentIdLog = idLog;
+
         try {
             out.println("[INFO] === INICIANDO PROCESAMIENTO DE DIVISIÓN (CUSTOM OUTPUT) ===");
             out.println("[INFO] Archivo de entrada: " + fileKey);
@@ -173,7 +199,7 @@ public class FileDivisionService {
             logger.info("Configuración - Registros esperados: {}, Registros por chunk: {}", expectedRecords, recordsPerChunk);
 
             // Procesar el archivo directamente desde el stream
-            long totalRecords = processFileStreamOptimized(fileKey, outputFolder, result);
+            long totalRecords = processFileStreamOptimized(fileKey, outputFolder, result, idLog);
             result.setTotalRecords(totalRecords);
 
             logger.info("Total de registros procesados: {} (NO se valida cantidad exacta, se aceptan todos)", totalRecords);
@@ -459,7 +485,7 @@ public class FileDivisionService {
             try {
                 out.println("[INFO] Subiendo chunk " + currentChunkIndex + " con " + recordsInCurrentBatch + " registros");
                 long uploadStart = System.currentTimeMillis();
-                uploadChunk(outputFolder, currentChunkIndex, batchContent.toString(), result);
+                uploadChunk(outputFolder, currentChunkIndex, batchContent.toString(), result, currentIdLog);
                 long uploadTime = System.currentTimeMillis() - uploadStart;
 
                 currentChunkIndex++;
@@ -483,8 +509,8 @@ public class FileDivisionService {
         public void cell(String cellReference, String formattedValue, org.apache.poi.xssf.usermodel.XSSFComment comment) {
             currentRow.add(formattedValue != null ? formattedValue : "");
             if (currentRow.size() <= 3) {
-                out.println("[DEBUG] DirectBatchXlsxProcessor.cell - cellReference: " + cellReference +
-                        ", formattedValue: " + formattedValue + ", currentRow.size(): " + currentRow.size());
+//                out.println("[DEBUG] DirectBatchXlsxProcessor.cell - cellReference: " + cellReference +
+//                        ", formattedValue: " + formattedValue + ", currentRow.size(): " + currentRow.size());
             }
         }
 
@@ -578,7 +604,7 @@ public class FileDivisionService {
                 if (recordsInCurrentChunk >= recordsPerChunk) {
                     try {
                         long uploadStart = System.currentTimeMillis();
-                        uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result);
+                        uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result, currentIdLog);
                         long uploadTime = System.currentTimeMillis() - uploadStart;
 
                         currentChunkIndex++;
@@ -612,7 +638,7 @@ public class FileDivisionService {
             // Subir último chunk si tiene contenido
             if (recordsInCurrentChunk > 0) {
                 try {
-                    uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result);
+                    uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result, currentIdLog);
                     logger.info("   ✅ Chunk final {} subido: {} registros",
                             currentChunkIndex + 1, recordsInCurrentChunk);
                     currentChunkIndex++;
@@ -716,12 +742,13 @@ public class FileDivisionService {
     /**
      * Procesa el archivo de forma optimizada para memoria usando streaming
      */
-    private long processFileStreamOptimized(String fileKey, String outputFolder, DivisionResult result) {
+    private long processFileStreamOptimized(String fileKey, String outputFolder, DivisionResult result, String idLog) {
         out.println("[INFO] ===== processFileStreamOptimized INICIADO =====");
         out.println("[INFO] Bucket: " + bucketName);
         out.println("[INFO] Key (ruta completa): " + fileKey);
         out.println("[INFO] Region: " + region);
         out.println("[INFO] Ruta S3 completa: s3://" + bucketName + "/" + fileKey);
+        out.println("[INFO] idLog: " + idLog);
 
         try {
             out.println("[INFO] === INTENTANDO OBTENER ARCHIVO DE S3 ===");
@@ -844,7 +871,7 @@ public class FileDivisionService {
 
             if (recordsInCurrentChunk >= recordsPerChunk) {
                 long uploadStart = System.currentTimeMillis();
-                uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result);
+                uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result, currentIdLog);
                 long uploadTime = System.currentTimeMillis() - uploadStart;
 
                 currentChunkIndex++;
@@ -865,7 +892,7 @@ public class FileDivisionService {
 
         // Subir el último chunk si tiene contenido
         if (recordsInCurrentChunk > 0) {
-            uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result);
+            uploadChunk(outputFolder, currentChunkIndex, chunkContent.toString(), result, currentIdLog);
             logger.info("✅ Chunk final {} subido: {} registros", currentChunkIndex + 1, recordsInCurrentChunk);
             currentChunkIndex++;
         }
@@ -884,7 +911,7 @@ public class FileDivisionService {
     /**
      * Sube un chunk a S3 (optimizado con retry automático)
      */
-    private void uploadChunk(String outputFolder, int chunkIndex, String content, DivisionResult result) {
+    private void uploadChunk(String outputFolder, int chunkIndex, String content, DivisionResult result, String idLog) {
             String chunkFileName = String.format("chunk_%04d.csv", chunkIndex + 1);
             String chunkKey = outputFolder + chunkFileName;
 
@@ -901,7 +928,29 @@ public class FileDivisionService {
             result.addGeneratedFileUrl(s3Url);
 
             logger.debug("Chunk subido: {} ({} bytes)", chunkFileName, content.length());
-                return; // Éxito
+
+            // Enviar mensaje SQS si se proporcionó idLog y sqsService está disponible
+            if (idLog != null && sqsService != null) {
+                try {
+                    String outputBucket = "bucket-csv-divididos-ani"; // Bucket de destino
+                    int sizeBatch = 100; // Siempre 100 según requerimientos
+                    
+                    logger.info("Enviando mensaje SQS para chunk: bucket={}, key={}, sizeBatch={}, idLog={}", 
+                        outputBucket, chunkKey, sizeBatch, idLog);
+                    
+                    sqsService.sendChunkMessage(outputBucket, chunkKey, sizeBatch, idLog);
+                    
+                    logger.info("✅ Mensaje SQS enviado exitosamente para chunk {}", chunkFileName);
+                    
+                } catch (Exception sqsError) {
+                    logger.error("❌ Error al enviar mensaje SQS para chunk {}: {}", chunkFileName, sqsError.getMessage());
+                    // No fallar el procesamiento si SQS falla, solo loggear el error
+                }
+            } else {
+                logger.debug("No se envió mensaje SQS - idLog: {}, sqsService: {}", idLog, (sqsService != null ? "disponible" : "null"));
+            }
+
+            return; // Éxito
 
         } catch (Exception e) {
                 lastException = e;
